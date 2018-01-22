@@ -1,3 +1,4 @@
+# coding=utf-8
 """
 Training script to train a model on MultiNLI and, optionally, on SNLI data as well.
 The "alpha" hyperparamaters set in paramaters.py determines if SNLI data is used in training. If alpha = 0, no SNLI data is used in training. If alpha > 0, then down-sampled SNLI data is used in training. 
@@ -181,6 +182,7 @@ class modelClassifier:
                         logger.Log("Step: %i\t Dev-matched cost: %f\t Dev-mismatched cost: %f\t Dev-SNLI cost: %f\t MultiNLI train cost: %f" %(self.step, dev_cost_mat, dev_cost_mismat, dev_cost_snli, mtrain_cost))
 
                 if self.step % 500 == 0:
+                    # 保存最好的模型
                     self.saver.save(self.sess, ckpt_file)
                     best_test = 100 * (1 - self.best_dev_mat / dev_acc_mat)
                     if best_test > 0.04:

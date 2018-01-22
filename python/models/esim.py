@@ -1,12 +1,15 @@
+# coding=utf-8
 import tensorflow as tf
+
 from util import blocks
+
 
 class MyModel(object):
     def __init__(self, seq_length, emb_dim, hidden_dim, embeddings, emb_train):
         ## Define hyperparameters
         self.embedding_dim = emb_dim
         self.dim = hidden_dim
-        self.sequence_length = seq_length 
+        self.sequence_length = seq_length
 
         ## Define the placeholders
         self.premise_x = tf.placeholder(tf.int32, [None, self.sequence_length])
@@ -16,13 +19,13 @@ class MyModel(object):
 
         ## Define parameters
         self.E = tf.Variable(embeddings, trainable=emb_train)
-        
+
         self.W_mlp = tf.Variable(tf.random_normal([self.dim * 8, self.dim], stddev=0.1))
         self.b_mlp = tf.Variable(tf.random_normal([self.dim], stddev=0.1))
 
         self.W_cl = tf.Variable(tf.random_normal([self.dim, 3], stddev=0.1))
         self.b_cl = tf.Variable(tf.random_normal([3], stddev=0.1))
-        
+
         ## Function for embedding lookup and dropout at embedding layer
         def emb_drop(x):
             emb = tf.nn.embedding_lookup(self.E, x)
@@ -30,9 +33,9 @@ class MyModel(object):
             return emb_drop
 
         # Get lengths of unpadded sentences
+        # [batch_size],[batch_size,seq_len,1]
         prem_seq_lengths, mask_prem = blocks.length(self.premise_x)
         hyp_seq_lengths, mask_hyp = blocks.length(self.hypothesis_x)
-
 
         ### First biLSTM layer ###
 
@@ -48,49 +51,59 @@ class MyModel(object):
         premise_list = tf.unstack(premise_bi, axis=1)
         hypothesis_list = tf.unstack(hypothesis_bi, axis=1)
 
-
         ### Attention ###
-
+        # [seq_len(pre),batch_size,seq_len(hyp),1]
         scores_all = []
+        # [seq_len(pre),batch_size,hidden_size*2]
         premise_attn = []
+        # [seq_len(pre),batch_size,seq_len(hyp),1]
         alphas = []
 
         for i in range(self.sequence_length):
-
+            # [seq_len,batch_size,1],对premise的每个词，计算对hypothesis的attention
             scores_i_list = []
             for j in range(self.sequence_length):
                 score_ij = tf.reduce_sum(tf.multiply(premise_list[i], hypothesis_list[j]), 1, keep_dims=True)
                 scores_i_list.append(score_ij)
-            
+            # [batch_size,seq_len,1]
             scores_i = tf.stack(scores_i_list, axis=1)
+            # 归一化的attention
             alpha_i = blocks.masked_softmax(scores_i, mask_hyp)
+            # [batch_size,hidden_size*2]
             a_tilde_i = tf.reduce_sum(tf.multiply(alpha_i, hypothesis_bi), 1)
             premise_attn.append(a_tilde_i)
-            
+
             scores_all.append(scores_i)
             alphas.append(alpha_i)
-
+        # [batch_size,seq_len(hyp),seq_len(pre),1]
         scores_stack = tf.stack(scores_all, axis=2)
+        # [seq_len(hyp),batch_size,seq_len(pre),1]
         scores_list = tf.unstack(scores_stack, axis=1)
-
+        # [seq_len(hyp),batch_size,hidden_size*2]
         hypothesis_attn = []
+        # [seq_len(hyp),batch_size,seq_len(pre),1]
         betas = []
+        # 对hypothesis的每个词，计算对premise的attention
         for j in range(self.sequence_length):
             scores_j = scores_list[j]
             beta_j = blocks.masked_softmax(scores_j, mask_prem)
+            # [batch_size,hidden_size*2]
             b_tilde_j = tf.reduce_sum(tf.multiply(beta_j, premise_bi), 1)
             hypothesis_attn.append(b_tilde_j)
 
             betas.append(beta_j)
 
         # Make attention-weighted sentence representations into one tensor,
+        # [bathc_size,seq_len(pre),hidden_size*2]
         premise_attns = tf.stack(premise_attn, axis=1)
+        # [batch_size,seq_len(hyp),hidden_size*2]
         hypothesis_attns = tf.stack(hypothesis_attn, axis=1)
 
-        # For making attention plots, 
+        # For making attention plots,
+        # [batch_size,seq_len(hyp),seq_len(pre),1]，对premise的每个词，计算对hypothesis的attention
         self.alpha_s = tf.stack(alphas, axis=2)
-        self.beta_s = tf.stack(betas, axis=2) 
-
+        # [batch_size,seq_len(pre),seq_len(hyp),1]，对hypothesis的每个词，计算对premise的attention
+        self.beta_s = tf.stack(betas, axis=2)
 
         ### Subcomponent Inference ###
 
@@ -99,9 +112,10 @@ class MyModel(object):
         hyp_diff = tf.subtract(hypothesis_bi, hypothesis_attns)
         hyp_mul = tf.multiply(hypothesis_bi, hypothesis_attns)
 
+        # [batch_size,seq_len(pre),hidden_size*4]
         m_a = tf.concat([premise_bi, premise_attns, prem_diff, prem_mul], 2)
+        # [batch_size,seq_len(hyp),hidden_size*4]
         m_b = tf.concat([hypothesis_bi, hypothesis_attns, hyp_diff, hyp_mul], 2)
-
 
         ### Inference Composition ###
 
@@ -110,7 +124,6 @@ class MyModel(object):
 
         v1_bi = tf.concat(v1_outs, axis=2)
         v2_bi = tf.concat(v2_outs, axis=2)
-
 
         ### Pooling Layer ###
 
@@ -124,16 +137,22 @@ class MyModel(object):
         v_2_max = tf.reduce_max(v2_bi, 1)
 
         v = tf.concat([v_1_ave, v_2_ave, v_1_max, v_2_max], 1)
-        
 
         # MLP layer
+        # 激活函数使用的是tanh
         h_mlp = tf.nn.tanh(tf.matmul(v, self.W_mlp) + self.b_mlp)
 
         # Dropout applied to classifier
         h_drop = tf.nn.dropout(h_mlp, self.keep_rate_ph)
 
         # Get prediction
+        # [batch_size,3]
         self.logits = tf.matmul(h_drop, self.W_cl) + self.b_cl
 
         # Define the cost function
-        self.total_cost = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.y, logits=self.logits))
+        self.total_cost = tf.reduce_mean(
+            tf.nn.sparse_softmax_cross_entropy_with_logits(
+                labels=self.y,
+                logits=self.logits
+            )
+        )
